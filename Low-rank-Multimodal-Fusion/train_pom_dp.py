@@ -13,7 +13,6 @@ import torch.optim as optim
 import numpy as np
 import csv
 
-import wandb
 
 def display(mae, corr, mult_acc):
     print("MAE on test set is {}".format(mae))
@@ -27,13 +26,12 @@ def main(options):
     run_id = options['run_id']
     epochs = options['epochs']
     data_path = options['data_path']
-    model_name = options['model_name']
-    model_path = options['model_path'] + model_name
+    model_path = options['model_path']
     output_path = options['output_path']
     signiture = options['signiture']
     patience = options['patience']
     output_dim = options['output_dim']
-
+    model_name = options['model_name']
 
     print("Training initializing... Setup ID is: {}".format(run_id))
 
@@ -50,8 +48,8 @@ def main(options):
     train_set, valid_set, test_set, input_dims = load_pom(data_path)
 
     params = dict()
-    params['audio_hidden'] = [4, 8, 16, 32]
-    params['video_hidden'] = [4, 8, 16, 32]
+    params['audio_hidden'] = [4, 8, 16]
+    params['video_hidden'] = [4, 8, 16]
     params['text_hidden'] = [64, 128, 256]
     params['audio_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
     params['video_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
@@ -139,26 +137,6 @@ def main(options):
         batch_sz = random.choice(params['batch_size'])
         decay = random.choice(params['weight_decay'])
 
-        name = f"POM_{model_name}"
-
-        wandb.init(name=name,
-                   project='MultiModal',
-                   notes="",
-                   mode="online",
-                   config={
-                       "audio_hid": ahid,
-                       "video_hid": vhid,
-                       "text_hid": thid,
-                       "audio_drop": adr,
-                       "video_drop": vdr,
-                       "text_drop": tdr,
-                       "factor_lr": factor_lr,
-                       "lr": lr,
-                       "batch_size": batch_sz
-                   },
-                   tags=[model_name]
-        )
-
         # reject the setting if it has been tried
         current_setting = (ahid, vhid, thid, adr, vdr, tdr, factor_lr, lr, r, batch_sz, decay)
         if current_setting in seen_settings:
@@ -166,15 +144,7 @@ def main(options):
         else:
             seen_settings.add(current_setting)
 
-        if model_name == "LMF":
-            model = LMF(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
-        elif model_name == "TFN":
-            model = TFN(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), 32, output_dim)
-        elif model_name == "DrFuse":
-            model = DrFUSE(input_dims, (ahid, ahid, ahid * 2, ahid), ahid, (adr, vdr, tdr, 0.5), output_dim)
-        elif model_name == "Unified":
-            model = Unified(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
-
+        model = LMF(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
         if options['cuda']:
             model = model.cuda()
             DTYPE = torch.cuda.FloatTensor
@@ -282,20 +252,9 @@ def main(options):
             results.extend(mae)
             results.extend(corr)
 
-            if wandb.run is not None:
-                wandb.log(
-                    {
-                        "MAE": np.mean(mae),
-                        "Corr": np.mean(corr),
-                        "Acc": np.mean(mult_acc)
-                    }
-                )
-
             with open(output_path, 'a+') as out:
                 writer = csv.writer(out)
                 writer.writerow(results)
-
-            wandb.finish()
 
 
 if __name__ == "__main__":
@@ -309,10 +268,10 @@ if __name__ == "__main__":
     OPTIONS.add_argument('--data_path', dest='data_path',
                          type=str, default='./data/')
     OPTIONS.add_argument('--model_path', dest='model_path',
-                         type=str, default='./models/')
+                         type=str, default='models')
     OPTIONS.add_argument('--output_path', dest='output_path',
                          type=str, default='results')
     OPTIONS.add_argument('--model_name', dest='model_name',
-                         type=str, default='DrFuse')
+                         type=str, default='LMF')
     PARAMS = vars(OPTIONS.parse_args())
     main(PARAMS)

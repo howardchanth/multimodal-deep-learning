@@ -1,5 +1,5 @@
 from __future__ import print_function
-from model import LMF
+from model import LMF, TFN, DrFUSE, Unified
 from utils import total, load_mosi
 from torch.utils.data import DataLoader, Dataset
 from torch.autograd import Variable
@@ -12,6 +12,8 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import csv
+
+import wandb
 
 
 def display(mae, corr, multi_acc, bi_acc, f1):
@@ -33,6 +35,7 @@ def main(options):
     signiture = options['signiture']
     patience = options['patience']
     output_dim = options['output_dim']
+    model_name = options['model_name']
 
     print("Training initializing... Setup ID is: {}".format(run_id))
 
@@ -49,15 +52,18 @@ def main(options):
     train_set, valid_set, test_set, input_dims = load_mosi(data_path)
 
     params = dict()
-    params['audio_hidden'] = [4, 8, 16]
-    params['video_hidden'] = [4, 8, 16]
-    params['text_hidden'] = [64, 128, 256]
-    params['audio_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
-    params['video_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
-    params['text_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
-    params['factor_learning_rate'] = [0.0003, 0.0005, 0.001, 0.003]
-    params['learning_rate'] = [0.0003, 0.0005, 0.001, 0.003]
-    params['rank'] = [1, 4, 8, 16]
+    params['audio_hidden'] = [8]
+    params['video_hidden'] = [8]
+    params['text_hidden'] = [16]
+    # params['audio_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
+    # params['video_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
+    # params['text_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
+    params['audio_dropout'] = [0]
+    params['video_dropout'] = [0]
+    params['text_dropout'] = [0]
+    params['factor_learning_rate'] = [0.0003, 0.0005, 0.001]
+    params['learning_rate'] = [0.0003, 0.0005, 0.001]
+    params['rank'] = [4, 8, 16]
     params['batch_size'] = [4, 8, 16, 32, 64, 128]
     params['weight_decay'] = [0, 0.001, 0.002, 0.01]
 
@@ -89,6 +95,26 @@ def main(options):
         batch_sz = random.choice(params['batch_size'])
         decay = random.choice(params['weight_decay'])
 
+        name = f"MOSI_{model_name}"
+
+        wandb.init(name=name,
+                   project='MultiModal',
+                   notes="",
+                   mode="online",
+                   config={
+                       "audio_hid": ahid,
+                       "video_hid": vhid,
+                       "text_hid": thid,
+                       "audio_drop": adr,
+                       "video_drop": vdr,
+                       "text_drop": tdr,
+                       "factor_lr": factor_lr,
+                       "lr": lr,
+                       "batch_size": batch_sz
+                   },
+                   tags=[model_name]
+                   )
+
         # reject the setting if it has been tried
         current_setting = (ahid, vhid, thid, adr, vdr, tdr, factor_lr, lr, r, batch_sz, decay)
         if current_setting in seen_settings:
@@ -96,7 +122,15 @@ def main(options):
         else:
             seen_settings.add(current_setting)
 
-        model = LMF(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
+        if model_name == "LMF":
+            model = LMF(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
+        elif model_name == "TFN":
+            model = TFN(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), 32, output_dim)
+        elif model_name == "DrFuse":
+            model = DrFUSE(input_dims, (ahid, ahid, ahid * 2, ahid), ahid, (adr, vdr, tdr, 0.5), output_dim)
+        elif model_name == "Unified":
+            model = Unified(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
+
         if options['cuda']:
             model = model.cuda()
             DTYPE = torch.cuda.FloatTensor
@@ -109,9 +143,9 @@ def main(options):
         # setup training
         complete = True
         min_valid_loss = float('Inf')
-        train_iterator = DataLoader(train_set, batch_size=batch_sz, num_workers=4, shuffle=True)
-        valid_iterator = DataLoader(valid_set, batch_size=len(valid_set), num_workers=4, shuffle=True)
-        test_iterator = DataLoader(test_set, batch_size=len(test_set), num_workers=4, shuffle=True)
+        train_iterator = DataLoader(train_set, batch_size=batch_sz, num_workers=0, shuffle=True)
+        valid_iterator = DataLoader(valid_set, batch_size=len(valid_set), num_workers=0, shuffle=True)
+        test_iterator = DataLoader(test_set, batch_size=len(test_set), num_workers=0, shuffle=True)
         curr_patience = patience
 
         for e in range(epochs):
@@ -126,10 +160,14 @@ def main(options):
                 x_v = Variable(x[1].float().type(DTYPE), requires_grad=False).squeeze()
                 x_t = Variable(x[2].float().type(DTYPE), requires_grad=False)
                 y = Variable(batch[-1].view(-1, output_dim).float().type(DTYPE), requires_grad=False)
+
                 output = model(x_a, x_v, x_t)
                 loss = criterion(output, y)
                 loss.backward()
-                avg_loss = loss.data[0]
+
+                assert not torch.isnan(loss)
+
+                avg_loss = loss.data.item()
                 avg_train_loss += avg_loss / len(train_set)
                 optimizer.step()
 
@@ -150,7 +188,7 @@ def main(options):
                 y = Variable(batch[-1].view(-1, output_dim).float().type(DTYPE), requires_grad=False)
                 output = model(x_a, x_v, x_t)
                 valid_loss = criterion(output, y)
-                avg_valid_loss = valid_loss.data[0]
+                avg_valid_loss = valid_loss.data.item()
             y = y.cpu().data.numpy().reshape(-1, output_dim)
 
             if np.isnan(avg_valid_loss):
@@ -182,7 +220,7 @@ def main(options):
                 y = Variable(batch[-1].view(-1, output_dim).float().type(DTYPE), requires_grad=False)
                 output_test = model(x_a, x_v, x_t)
                 loss_test = criterion(output_test, y)
-                avg_test_loss = loss_test.data[0] / len(test_set)
+                avg_test_loss = loss_test.data.item() / len(test_set)
 
             output_test = output_test.cpu().data.numpy().reshape(-1, output_dim)
             y = y.cpu().data.numpy().reshape(-1, output_dim)
@@ -220,10 +258,21 @@ def main(options):
             f1 = f1_score(true_label, predicted_label, average='weighted')
             display(mae, corr, multi_acc, bi_acc, f1)
 
+            if wandb.run is not None:
+                wandb.log(
+                    {
+                        "MAE": mae,
+                        "Corr": corr,
+                        "Acc": bi_acc,
+                        "F1": f1
+                    }
+                )
+
             with open(output_path, 'a+') as out:
                 writer = csv.writer(out)
                 writer.writerow([ahid, vhid, thid, adr, vdr, tdr, factor_lr, lr, r, batch_sz, decay,
-                                min_valid_loss.cpu().data.numpy(), mae, corr, multi_acc, bi_acc, f1])
+                                min_valid_loss, mae, corr, multi_acc, bi_acc, f1])
+            wandb.finish()
 
 
 if __name__ == "__main__":
@@ -241,6 +290,8 @@ if __name__ == "__main__":
     OPTIONS.add_argument('--output_path', dest='output_path',
                          type=str, default='results')
     OPTIONS.add_argument('--max_len', dest='max_len', type=int, default=20)
+    OPTIONS.add_argument('--model_name', dest='model_name',
+                         type=str, default='Unified')
     PARAMS = vars(OPTIONS.parse_args())
 
     main(PARAMS)

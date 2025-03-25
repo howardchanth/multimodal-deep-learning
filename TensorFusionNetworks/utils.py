@@ -7,7 +7,7 @@ of the utils below at https://github.com/Justin1904/tetheras-utils.
 Preprocessing multimodal data is really tiring...
 '''
 from __future__ import print_function
-import mmdata
+from mmsdk import mmdatasdk
 import numpy as np
 from torch.utils.data import Dataset
 
@@ -50,7 +50,7 @@ class MultimodalDataset(object):
     """The class object for all multimodal datasets from CMU-MultimodalDataSDK"""
     def __init__(self, dataset, visual='facet', audio='covarep', text='embeddings', pivot='words', sentiments=True, emotions=False, max_len=20):
         # instantiate a multimodal dataloader
-        self.dataloader = mmdata.__dict__[dataset]()
+        self.dataloader = mmdatasdk.__dict__[dataset]()
         self.max_len = max_len
 
         # load the separate modalities, it's silly to access parent class' methods
@@ -69,8 +69,8 @@ class MultimodalDataset(object):
             self.emotions = self.dataloader.emotions()
 
         # merge them one by one
-        self.dataset = mmdata.Dataset.merge(self.visual, self.text)
-        self.dataset = mmdata.Dataset.merge(self.audio, self.dataset)
+        self.dataset = mmdatasdk.Dataset.merge(self.visual, self.text)
+        self.dataset = mmdatasdk.Dataset.merge(self.audio, self.dataset)
 
         # align the modalities
         self.aligned = self.dataset.align(text)

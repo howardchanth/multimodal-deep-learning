@@ -1,9 +1,9 @@
 from __future__ import print_function
-from model import LMF, TFN, DrFUSE, Unified
-from utils import total, load_pom
+from model import LMF
+from utils import total, load_mosi
 from torch.utils.data import DataLoader, Dataset
 from torch.autograd import Variable
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, f1_score
 import os
 import argparse
 import torch
@@ -13,12 +13,15 @@ import torch.optim as optim
 import numpy as np
 import csv
 
-import wandb
+from dp import DirichletProcess3DLoss
 
-def display(mae, corr, mult_acc):
+
+def display(mae, corr, multi_acc, bi_acc, f1):
     print("MAE on test set is {}".format(mae))
     print("Correlation w.r.t human evaluation on test set is {}".format(corr))
-    print("Multiclass accuracy on test set is {}".format(mult_acc))
+    print("Multiclass accuracy on test set is {}".format(multi_acc))
+    print("Binary accuracy on test set is {}".format(bi_acc))
+    print("F1-score on test set is {}".format(f1))
 
 def main(options):
     DTYPE = torch.FloatTensor
@@ -27,13 +30,11 @@ def main(options):
     run_id = options['run_id']
     epochs = options['epochs']
     data_path = options['data_path']
-    model_name = options['model_name']
-    model_path = options['model_path'] + model_name
+    model_path = options['model_path']
     output_path = options['output_path']
     signiture = options['signiture']
     patience = options['patience']
     output_dim = options['output_dim']
-
 
     print("Training initializing... Setup ID is: {}".format(run_id))
 
@@ -47,11 +48,11 @@ def main(options):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
-    train_set, valid_set, test_set, input_dims = load_pom(data_path)
+    train_set, valid_set, test_set, input_dims = load_mosi(data_path)
 
     params = dict()
-    params['audio_hidden'] = [4, 8, 16, 32]
-    params['video_hidden'] = [4, 8, 16, 32]
+    params['audio_hidden'] = [4, 8, 16]
+    params['video_hidden'] = [4, 8, 16]
     params['text_hidden'] = [64, 128, 256]
     params['audio_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
     params['video_dropout'] = [0, 0.1, 0.15, 0.2, 0.3, 0.5]
@@ -71,58 +72,9 @@ def main(options):
     with open(output_path, 'w+') as out:
         writer = csv.writer(out)
         writer.writerow(["audio_hidden", "video_hidden", 'text_hidden', 'audio_dropout', 'video_dropout', 'text_dropout',
-                        'factor_learning_rate', 'learning_rate', 'rank', 'batch_size', 'weight_decay', 'Best Validation MAE', 
+                        'factor_learning_rate', 'learning_rate', 'rank', 'batch_size', 'weight_decay',
+                        'Best Validation MAE', 'Test MAE', 'Test Corr', 'Test multiclass accuracy', 'Test binary accuracy', 'Test f1_score'])
 
-                        'Confidence accuracy',
-                        'Passionate accuracy',
-                        'Pleasant accuracy',
-                        'Dominant accuracy',
-                        'Credible accuracy',
-                        'Vivid accuracy',
-                        'Expertise accuracy',
-                        'Entertaining accuracy',
-                        'Reserved accuracy',
-                        'Trusting accuracy',
-                        'Relaxed accuracy',
-                        'Outgoing accuracy',
-                        'Thorough accuracy',
-                        'Nervous accuracy',
-                        'Persuasive accuracy',
-                        'Humorous accuracy',
-
-                        'Confidence MAE',
-                        'Passionate MAE',
-                        'Pleasant MAE',
-                        'Dominant MAE',
-                        'Credible MAE',
-                        'Vivid MAE',
-                        'Expertise MAE',
-                        'Entertaining MAE',
-                        'Reserved MAE',
-                        'Trusting MAE',
-                        'Relaxed MAE',
-                        'Outgoing MAE',
-                        'Thorough MAE',
-                        'Nervous MAE',
-                        'Persuasive MAE',
-                        'Humorous MAE',
-
-                        'Confidence corr',
-                        'Passionate corr',
-                        'Pleasant corr',
-                        'Dominant corr',
-                        'Credible corr',
-                        'Vivid corr',
-                        'Expertise corr',
-                        'Entertaining corr',
-                        'Reserved corr',
-                        'Trusting corr',
-                        'Relaxed corr',
-                        'Outgoing corr',
-                        'Thorough corr',
-                        'Nervous corr',
-                        'Persuasive corr',
-                        'Humorous corr'])
 
     for i in range(total_settings):
 
@@ -139,26 +91,6 @@ def main(options):
         batch_sz = random.choice(params['batch_size'])
         decay = random.choice(params['weight_decay'])
 
-        name = f"POM_{model_name}"
-
-        wandb.init(name=name,
-                   project='MultiModal',
-                   notes="",
-                   mode="online",
-                   config={
-                       "audio_hid": ahid,
-                       "video_hid": vhid,
-                       "text_hid": thid,
-                       "audio_drop": adr,
-                       "video_drop": vdr,
-                       "text_drop": tdr,
-                       "factor_lr": factor_lr,
-                       "lr": lr,
-                       "batch_size": batch_sz
-                   },
-                   tags=[model_name]
-        )
-
         # reject the setting if it has been tried
         current_setting = (ahid, vhid, thid, adr, vdr, tdr, factor_lr, lr, r, batch_sz, decay)
         if current_setting in seen_settings:
@@ -166,15 +98,7 @@ def main(options):
         else:
             seen_settings.add(current_setting)
 
-        if model_name == "LMF":
-            model = LMF(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
-        elif model_name == "TFN":
-            model = TFN(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), 32, output_dim)
-        elif model_name == "DrFuse":
-            model = DrFUSE(input_dims, (ahid, ahid, ahid * 2, ahid), ahid, (adr, vdr, tdr, 0.5), output_dim)
-        elif model_name == "Unified":
-            model = Unified(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
-
+        model = LMF(input_dims, (ahid, vhid, thid), thid_2, (adr, vdr, tdr, 0.5), output_dim, r)
         if options['cuda']:
             model = model.cuda()
             DTYPE = torch.cuda.FloatTensor
@@ -182,7 +106,7 @@ def main(options):
         criterion = nn.L1Loss(size_average=False)
         factors = list(model.parameters())[:3]
         other = list(model.parameters())[3:]
-        optimizer = optim.Adam([{"params": factors, "lr": factor_lr}, {"params": other, "lr": lr}], weight_decay=decay) # don't optimize the first 2 params, they should be fixed (output_range and shift)
+        optimizer = optim.Adam([{"params": factors, "lr": factor_lr}, {"params": other, "lr": lr}], weight_decay=decay)
 
         # setup training
         complete = True
@@ -191,6 +115,7 @@ def main(options):
         valid_iterator = DataLoader(valid_set, batch_size=len(valid_set), num_workers=0, shuffle=True)
         test_iterator = DataLoader(test_set, batch_size=len(test_set), num_workers=0, shuffle=True)
         curr_patience = patience
+
         for e in range(epochs):
             model.train()
             model.zero_grad()
@@ -199,14 +124,17 @@ def main(options):
                 model.zero_grad()
 
                 x = batch[:-1]
-                x_a = Variable(x[0].float().type(DTYPE), requires_grad=False)
-                x_v = Variable(x[1].float().type(DTYPE), requires_grad=False)
+                x_a = Variable(x[0].float().type(DTYPE), requires_grad=False).squeeze()
+                x_v = Variable(x[1].float().type(DTYPE), requires_grad=False).squeeze()
                 x_t = Variable(x[2].float().type(DTYPE), requires_grad=False)
                 y = Variable(batch[-1].view(-1, output_dim).float().type(DTYPE), requires_grad=False)
+
+
+
                 output = model(x_a, x_v, x_t)
                 loss = criterion(output, y)
                 loss.backward()
-                avg_loss = loss.item() / float(output_dim)
+                avg_loss = loss.item()
                 avg_train_loss += avg_loss / len(train_set)
                 optimizer.step()
 
@@ -221,20 +149,19 @@ def main(options):
             model.eval()
             for batch in valid_iterator:
                 x = batch[:-1]
-                x_a = Variable(x[0].float().type(DTYPE), requires_grad=False)
-                x_v = Variable(x[1].float().type(DTYPE), requires_grad=False)
+                x_a = Variable(x[0].float().type(DTYPE), requires_grad=False).squeeze()
+                x_v = Variable(x[1].float().type(DTYPE), requires_grad=False).squeeze()
                 x_t = Variable(x[2].float().type(DTYPE), requires_grad=False)
                 y = Variable(batch[-1].view(-1, output_dim).float().type(DTYPE), requires_grad=False)
                 output = model(x_a, x_v, x_t)
                 valid_loss = criterion(output, y)
-                avg_valid_loss = valid_loss.item() / float(output_dim)
+                avg_valid_loss = valid_loss.item()
             y = y.cpu().data.numpy().reshape(-1, output_dim)
 
             if np.isnan(avg_valid_loss):
                 print("Training got into NaN values...\n\n")
                 complete = False
                 break
-
 
             avg_valid_loss = avg_valid_loss / len(valid_set)
             print("Validation loss is: {}".format(avg_valid_loss))
@@ -246,56 +173,62 @@ def main(options):
                 print("Found new best model, saving to disk...")
             else:
                 curr_patience -= 1
-            
+
             if curr_patience <= 0:
                 break
             print("\n\n")
 
-        if complete:
-            
-            best_model = torch.load(model_path)
-            best_model.eval()
+            model.eval()
             for batch in test_iterator:
                 x = batch[:-1]
-                x_a = Variable(x[0].float().type(DTYPE), requires_grad=False)
-                x_v = Variable(x[1].float().type(DTYPE), requires_grad=False)
+                x_a = Variable(x[0].float().type(DTYPE), requires_grad=False).squeeze()
+                x_v = Variable(x[1].float().type(DTYPE), requires_grad=False).squeeze()
                 x_t = Variable(x[2].float().type(DTYPE), requires_grad=False)
                 y = Variable(batch[-1].view(-1, output_dim).float().type(DTYPE), requires_grad=False)
-                output_test = best_model(x_a, x_v, x_t)
+                output_test = model(x_a, x_v, x_t)
                 loss_test = criterion(output_test, y)
-                test_loss = loss_test.item()
-                avg_test_loss = test_loss / float(output_dim)
+                avg_test_loss = loss_test.item() / len(test_set)
+
             output_test = output_test.cpu().data.numpy().reshape(-1, output_dim)
             y = y.cpu().data.numpy().reshape(-1, output_dim)
 
             # these are the needed metrics
-            mae = np.mean(np.absolute(output_test - y), axis=0)
-            mae = [round(a, 3) for a in mae]
-            corr = [round(np.corrcoef(output_test[:, i], y[:, i])[0][1], 3) for i in range(y.shape[1])]
-            mult_acc = [round(sum(np.round(output_test[:, i]) == np.round(y[:, i])) / float(len(y)), 3) for i in range(y.shape[1])]
+            output_test = output_test.reshape((len(output_test),))
+            y = y.reshape((len(y),))
+            mae = np.mean(np.absolute(output_test-y))
 
-            display(mae, corr, mult_acc)
+        if complete:
 
-            results = [ahid, vhid, thid, adr, vdr, tdr, factor_lr, lr, r, batch_sz, decay, min_valid_loss]
+            best_model = torch.load(model_path)
+            best_model.eval()
+            for batch in test_iterator:
+                x = batch[:-1]
+                x_a = Variable(x[0].float().type(DTYPE), requires_grad=False).squeeze()
+                x_v = Variable(x[1].float().type(DTYPE), requires_grad=False).squeeze()
+                x_t = Variable(x[2].float().type(DTYPE), requires_grad=False)
+                y = Variable(batch[-1].view(-1, output_dim).float().type(DTYPE), requires_grad=False)
+                output_test = best_model(x_a, x_v, x_t)
+                loss_test = criterion(output_test, y)
 
-            results.extend(mult_acc)
-            results.extend(mae)
-            results.extend(corr)
+            output_test = output_test.cpu().data.numpy().reshape(-1, output_dim)
+            y = y.cpu().data.numpy().reshape(-1, output_dim)
 
-            if wandb.run is not None:
-                wandb.log(
-                    {
-                        "MAE": np.mean(mae),
-                        "Corr": np.mean(corr),
-                        "Acc": np.mean(mult_acc)
-                    }
-                )
+            # these are the needed metrics
+            output_test = output_test.reshape((len(output_test),))
+            y = y.reshape((len(y),))
+            mae = np.mean(np.absolute(output_test-y))
+            corr = round(np.corrcoef(output_test,y)[0][1],5)
+            multi_acc = round(sum(np.round(output_test)==np.round(y))/float(len(y)),5)
+            true_label = (y >= 0)
+            predicted_label = (output_test >= 0)
+            bi_acc = accuracy_score(true_label, predicted_label)
+            f1 = f1_score(true_label, predicted_label, average='weighted')
+            display(mae, corr, multi_acc, bi_acc, f1)
 
             with open(output_path, 'a+') as out:
                 writer = csv.writer(out)
-                writer.writerow(results)
-
-            wandb.finish()
+                writer.writerow([ahid, vhid, thid, adr, vdr, tdr, factor_lr, lr, r, batch_sz, decay,
+                                min_valid_loss.cpu().data.numpy(), mae, corr, multi_acc, bi_acc, f1])
 
 
 if __name__ == "__main__":
@@ -303,16 +236,16 @@ if __name__ == "__main__":
     OPTIONS.add_argument('--run_id', dest='run_id', type=int, default=1)
     OPTIONS.add_argument('--epochs', dest='epochs', type=int, default=500)
     OPTIONS.add_argument('--patience', dest='patience', type=int, default=20)
-    OPTIONS.add_argument('--output_dim', dest='output_dim', type=int, default=16) # for 16 speaker traits
-    OPTIONS.add_argument('--signiture', dest='signiture', type=str, default='')
+    OPTIONS.add_argument('--output_dim', dest='output_dim', type=int, default=1)
+    OPTIONS.add_argument('--signiture', dest='signiture', type=str, default='mosi')     
     OPTIONS.add_argument('--cuda', dest='cuda', type=bool, default=False)
     OPTIONS.add_argument('--data_path', dest='data_path',
                          type=str, default='./data/')
     OPTIONS.add_argument('--model_path', dest='model_path',
-                         type=str, default='./models/')
+                         type=str, default='models')
     OPTIONS.add_argument('--output_path', dest='output_path',
                          type=str, default='results')
-    OPTIONS.add_argument('--model_name', dest='model_name',
-                         type=str, default='DrFuse')
+    OPTIONS.add_argument('--max_len', dest='max_len', type=int, default=20)
     PARAMS = vars(OPTIONS.parse_args())
+
     main(PARAMS)

@@ -1,3 +1,4 @@
+import torch
 from torch.utils.data import Dataset
 import sys
 
@@ -5,6 +6,8 @@ if sys.version_info.major == 2:
     import cPickle as pickle
 else:
     import pickle
+
+import numpy as np
 
 import pdb
 
@@ -189,6 +192,11 @@ def load_mosi(data_path):
     print("Text feature dimension is: {}".format(text_dim))
     input_dims = (audio_dim, visual_dim, text_dim)
 
+    # for visual and audio modality, we average across time
+    # here the original data has shape (max_len, num_examples, feature_dim)
+    # after averaging they become (1, num_examples, feature_dim)
+
+
     # remove possible NaN values
     train_set.visual[train_set.visual != train_set.visual] = 0
     valid_set.visual[valid_set.visual != valid_set.visual] = 0
@@ -198,5 +206,8 @@ def load_mosi(data_path):
     valid_set.audio[valid_set.audio != valid_set.audio] = 0
     test_set.audio[test_set.audio != test_set.audio] = 0
 
+    train_set.audio[np.isinf(train_set.audio)] = 0
+    valid_set.audio[np.isinf(valid_set.audio)] = 0
+    test_set.audio[np.isinf(test_set.audio)] = 0
 
     return train_set, valid_set, test_set, input_dims
